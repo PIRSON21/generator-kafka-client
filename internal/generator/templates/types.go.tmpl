@@ -1,0 +1,25 @@
+package {{.PackageName}}
+
+import "encoding/json"
+
+type EventType string
+
+const (
+{{- range .Services}}
+{{- range .Methods}}
+	Event{{.Name}} EventType = "{{.EventType}}"
+{{- end}}
+{{- end}}
+)
+
+type event struct {
+	Type EventType       `json:"event_type"`
+	Data json.RawMessage `json:"data"`
+}
+{{range .Structs}}
+type {{.Name}} struct {
+{{- range .Fields}}
+	{{.Name}} {{.Type}} `{{.Tag}}`
+{{- end}}
+}
+{{end}}

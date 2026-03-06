@@ -1,0 +1,68 @@
+package {{.PackageName}}
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	kafkawrapper "{{.KafkaImport}}"
+)
+
+type ClientConfig struct {
+	Kafka *kafkawrapper.ConfigProducer
+}
+{{range .Services}}
+{{$svc := .}}
+type {{.Name}}Client interface {
+{{- range .Methods}}
+	{{.Name}}(ctx context.Context, req {{.ReqType}}) error
+{{- end}}
+	Close()
+}
+
+type {{lowerFirst .Name}}Client struct {
+	producer kafkawrapper.Producer
+}
+
+func New{{.Name}}Client(cfg ClientConfig) ({{.Name}}Client, error) {
+	producer, err := kafkawrapper.NewProducer(cfg.Kafka)
+	if err != nil {
+		return nil, fmt.Errorf("create producer: %w", err)
+	}
+	return &{{lowerFirst .Name}}Client{producer: producer}, nil
+}
+{{range .Methods}}
+func (c *{{lowerFirst $svc.Name}}Client) {{.Name}}(ctx context.Context, req {{.ReqType}}) error {
+	return c.send(Event{{.Name}}, &req)
+}
+{{end}}
+func (c *{{lowerFirst .Name}}Client) Close() {
+	c.producer.Close()
+}
+
+func (c *{{lowerFirst .Name}}Client) send(eventType EventType, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	ev := event{
+		Type: eventType,
+		Data: data,
+	}
+
+	raw, err := json.Marshal(&ev)
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+
+	key := []byte(time.Now().Format(time.RFC3339Nano))
+
+	if err := c.producer.AddMessage(key, raw); err != nil {
+		return fmt.Errorf("send message: %w", err)
+	}
+
+	return nil
+}
+{{end}}

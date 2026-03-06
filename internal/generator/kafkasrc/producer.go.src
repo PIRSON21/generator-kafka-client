@@ -1,0 +1,73 @@
+package kafka
+
+import (
+	"fmt"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+type Producer interface {
+	AddMessage(key, data []byte) error // Добавляем сообщение
+	Close()                            // Закрываем соединение
+}
+
+type producer struct {
+	client *kafka.Producer
+	topic  string
+}
+
+func NewProducer(cfg *ConfigProducer) (Producer, error) {
+	config := &kafka.ConfigMap{
+		"bootstrap.servers":   cfg.BootstrapServers,
+		"acks":                cfg.Acks,
+		"client.id":           cfg.ClientID,
+		"retries":             cfg.Retries,
+		"linger.ms":           cfg.LingerMs,
+		"delivery.timeout.ms": cfg.DeliveryTimeoutMs,
+	}
+
+	producerKafka, err := kafka.NewProducer(config)
+	if err != nil {
+		return &producer{}, fmt.Errorf("fail up kafka: %w", err)
+	}
+
+	return &producer{
+		client: producerKafka,
+		topic:  cfg.Topic,
+	}, nil
+}
+
+// Добавляем сообщение.
+func (p *producer) AddMessage(key, data []byte) error {
+	deliveryChan := make(chan kafka.Event)
+
+	// Отправка сообщений в синхронном режиме
+	err := p.client.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &p.topic,
+			Partition: kafka.PartitionAny,
+		},
+		Key:   key,
+		Value: data,
+	}, deliveryChan)
+	if err != nil {
+		close(deliveryChan)
+		return err
+	}
+
+	// Ожидание события доставки
+	event := <-deliveryChan
+	m := event.(*kafka.Message)
+
+	if m.TopicPartition.Error != nil {
+		close(deliveryChan)
+		return m.TopicPartition.Error
+	}
+
+	return nil
+}
+
+// Закрываем соединение.
+func (p *producer) Close() {
+	p.client.Close()
+}

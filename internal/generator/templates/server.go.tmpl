@@ -1,0 +1,75 @@
+package {{.PackageName}}
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	kafkawrapper "{{.KafkaImport}}"
+)
+{{range .Services}}
+type {{.Name}}Handler interface {
+{{- range .Methods}}
+	{{.Name}}(ctx context.Context, req *{{.ReqType}}) error
+{{- end}}
+}
+{{end}}
+type ServerConfig struct {
+	Kafka *kafkawrapper.ConfigConsumer
+}
+
+type serverRouter struct {
+{{- range .Services}}
+	{{lowerFirst .Name}}Handler {{.Name}}Handler
+{{- end}}
+	consumer kafkawrapper.Consumer
+}
+
+func NewServer(cfg ServerConfig,
+{{- range .Services}}
+	{{lowerFirst .Name}} {{.Name}}Handler,
+{{- end}}
+) (*serverRouter, error) {
+	consumer, err := kafkawrapper.NewConsumer(cfg.Kafka)
+	if err != nil {
+		return nil, fmt.Errorf("create consumer: %w", err)
+	}
+	return &serverRouter{
+{{- range .Services}}
+		{{lowerFirst .Name}}Handler: {{lowerFirst .Name}},
+{{- end}}
+		consumer: consumer,
+	}, nil
+}
+
+func (s *serverRouter) Run(ctx context.Context) error {
+	return s.consumer.Consume(ctx, s.route)
+}
+
+func (s *serverRouter) Close() error {
+	return s.consumer.Close()
+}
+
+func (s *serverRouter) route(ctx context.Context, msg *kafka.Message) error {
+	var ev event
+	if err := json.Unmarshal(msg.Value, &ev); err != nil {
+		return fmt.Errorf("unmarshal event: %w", err)
+	}
+
+	switch ev.Type {
+{{- range .Services}}
+{{- $svc := .}}
+{{- range .Methods}}
+	case Event{{.Name}}:
+		var req {{.ReqType}}
+		if err := json.Unmarshal(ev.Data, &req); err != nil {
+			return fmt.Errorf("unmarshal {{.ReqType}}: %w", err)
+		}
+		return s.{{lowerFirst $svc.Name}}Handler.{{.Name}}(ctx, &req)
+{{- end}}
+{{- end}}
+	default:
+		return nil
+	}
+}
