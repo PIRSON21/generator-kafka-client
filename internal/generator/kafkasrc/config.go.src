@@ -1,0 +1,22 @@
+package kafka
+
+// Конфигурация для Producer.
+type ConfigProducer struct {
+	BootstrapServers  string
+	Acks              string
+	ClientID          string
+	Retries           int
+	LingerMs          int
+	DeliveryTimeoutMs int
+	Topic             string
+}
+
+// Конфигурация для Consumer.
+type ConfigConsumer struct {
+	BootstrapServers      string
+	GroupID               string
+	EnableAutoOffsetStore bool
+	EnableAutoCommit      bool
+	AutoOffsetReset       string
+	Topic                 string
+}

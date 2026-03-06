@@ -1,0 +1,71 @@
+package kafka
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+type Consumer interface {
+	Consume(ctx context.Context, handler func(ctx context.Context, msg *kafka.Message) error) error // Читаем сообщения
+	Close() error                                                                                   // Закрываем соединение
+}
+
+type consumerClient struct {
+	client *kafka.Consumer
+}
+
+func NewConsumer(cfg *ConfigConsumer) (Consumer, error) {
+	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
+		"bootstrap.servers":        cfg.BootstrapServers,
+		"group.id":                 cfg.GroupID,
+		"enable.auto.offset.store": cfg.EnableAutoOffsetStore,
+		"enable.auto.commit":       cfg.EnableAutoCommit,
+		"auto.offset.reset":        cfg.AutoOffsetReset,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create kafka consumer: %w", err)
+	}
+
+	if err = consumer.SubscribeTopics([]string{cfg.Topic}, nil); err != nil {
+		if errClose := consumer.Close(); errClose != nil {
+			return nil, fmt.Errorf("err close: %w,subscribe kafka topics: %w", errClose, err)
+		}
+		return nil, fmt.Errorf("subscribe kafka topics: %w", err)
+	}
+
+	return &consumerClient{
+		client: consumer,
+	}, nil
+}
+
+func (c *consumerClient) Consume(ctx context.Context, handler func(ctx context.Context, msg *kafka.Message) error) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		ev, err := c.client.ReadMessage(-1)
+		if err != nil {
+			return fmt.Errorf("read kafka message: %w", err)
+		}
+
+		log.Println(ev)
+		if ev == nil {
+			log.Println("nil")
+		}
+
+		if err := handler(ctx, ev); err != nil {
+			return err
+		}
+	}
+}
+
+// Закрываем соединение.
+func (c *consumerClient) Close() error {
+	return c.client.Close()
+}
