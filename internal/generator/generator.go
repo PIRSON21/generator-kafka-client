@@ -1,12 +1,10 @@
 package generator
 
 import (
-	"bufio"
 	"bytes"
 	"embed"
 	"fmt"
 	"go/format"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,9 +16,6 @@ import (
 //go:embed templates/*.tmpl
 var templateFS embed.FS
 
-//go:embed kafkasrc/*.go.src
-var kafkaSrcFS embed.FS
-
 var funcMap = template.FuncMap{
 	"lowerFirst": func(s string) string {
 		if s == "" {
@@ -28,6 +23,8 @@ var funcMap = template.FuncMap{
 		}
 		return strings.ToLower(s[:1]) + s[1:]
 	},
+	"fieldValidations":     fieldValidations,
+	"hasValidatableFields": hasValidatableFields,
 }
 
 // templateData is the data passed to each template.
@@ -36,16 +33,10 @@ type templateData struct {
 	KafkaImport string
 }
 
-// Generate renders types.go, client.go, server.go into outDir and copies the
-// kafka wrapper sources into outDir/kafka/.
-func Generate(def *model.ServiceDef, outDir string) error {
+// Generate renders types.go, client.go, server.go into outDir.
+func Generate(def *model.ServiceDef, outDir string, kafkaImport string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
-	}
-
-	kafkaImport, err := resolveKafkaImport(outDir)
-	if err != nil {
-		return fmt.Errorf("resolve kafka import: %w", err)
 	}
 
 	data := templateData{ServiceDef: def, KafkaImport: kafkaImport}
@@ -65,103 +56,7 @@ func Generate(def *model.ServiceDef, outDir string) error {
 		}
 	}
 
-	if err := copyKafkaSrc(filepath.Join(outDir, "kafka")); err != nil {
-		return fmt.Errorf("copy kafka sources: %w", err)
-	}
-
 	return nil
-}
-
-// resolveKafkaImport finds the go.mod above outDir, derives the module import
-// path and returns "<module>/<rel-outDir>/kafka".
-func resolveKafkaImport(outDir string) (string, error) {
-	absOut, err := filepath.Abs(outDir)
-	if err != nil {
-		return "", fmt.Errorf("abs path: %w", err)
-	}
-
-	modRoot, modName, err := findModule(absOut)
-	if err != nil {
-		return "", err
-	}
-
-	rel, err := filepath.Rel(modRoot, absOut)
-	if err != nil {
-		return "", fmt.Errorf("rel path: %w", err)
-	}
-
-	// Use forward slashes for Go import paths.
-	rel = filepath.ToSlash(rel)
-	return modName + "/" + rel + "/kafka", nil
-}
-
-// findModule walks up from dir until it finds a go.mod file and returns the
-// module root directory and module name declared in that file.
-func findModule(dir string) (root, name string, err error) {
-	for {
-		candidate := filepath.Join(dir, "go.mod")
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			name, err := readModuleName(candidate)
-			if err != nil {
-				return "", "", err
-			}
-			return dir, name, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", "", fmt.Errorf("go.mod not found above %s", dir)
-		}
-		dir = parent
-	}
-}
-
-// readModuleName parses the module directive from a go.mod file.
-func readModuleName(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("open go.mod: %w", err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
-		}
-	}
-	return "", fmt.Errorf("module directive not found in %s", path)
-}
-
-// copyKafkaSrc copies the embedded kafka source files into destDir.
-func copyKafkaSrc(destDir string) error {
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("create kafka dir: %w", err)
-	}
-
-	return fs.WalkDir(kafkaSrcFS, "kafkasrc", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-
-		data, err := kafkaSrcFS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read embedded %s: %w", path, err)
-		}
-
-		// Strip ".src" suffix: "producer.go.src" → "producer.go"
-		name := strings.TrimSuffix(filepath.Base(path), ".src")
-		destPath := filepath.Join(destDir, name)
-		if err := os.WriteFile(destPath, data, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", destPath, err)
-		}
-
-		return nil
-	})
 }
 
 func renderFile(data templateData, tmplPath, outPath string) error {
@@ -190,4 +85,102 @@ func renderFile(data templateData, tmplPath, outPath string) error {
 	}
 
 	return nil
+}
+
+// hasValidatableFields reports whether any struct field has a validate tag.
+func hasValidatableFields(structs []model.StructDef) bool {
+	for _, s := range structs {
+		for _, f := range s.Fields {
+			if f.ValidateTag != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fieldValidations returns the generated if-block validation code for a single field.
+// The returned string is inserted verbatim into the template; go/format normalises indentation.
+func fieldValidations(f model.FieldDef) string {
+	if f.ValidateTag == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for _, rule := range strings.Split(f.ValidateTag, ",") {
+		rule = strings.TrimSpace(rule)
+		var block string
+		switch {
+		case rule == "required":
+			block = requiredCheck(f)
+		case strings.HasPrefix(rule, "gte="):
+			block = gteCheck(f, strings.TrimPrefix(rule, "gte="))
+		case strings.HasPrefix(rule, "lte="):
+			block = lteCheck(f, strings.TrimPrefix(rule, "lte="))
+		case strings.HasPrefix(rule, "neq="):
+			block = neqCheck(f, strings.TrimPrefix(rule, "neq="))
+		case strings.HasPrefix(rule, "eq="):
+			block = eqCheck(f, strings.TrimPrefix(rule, "eq="))
+		}
+		if block != "" {
+			sb.WriteString(block)
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+func isNumericType(t string) bool {
+	switch t {
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64":
+		return true
+	}
+	return false
+}
+
+func requiredCheck(f model.FieldDef) string {
+	switch {
+	case f.Type == "string":
+		return fmt.Sprintf("if req.%s == \"\" {\nreturn errors.New(\"%s is required\")\n}", f.Name, f.Name)
+	case f.Type == "bool":
+		return fmt.Sprintf("if !req.%s {\nreturn errors.New(\"%s is required\")\n}", f.Name, f.Name)
+	case isNumericType(f.Type):
+		return fmt.Sprintf("if req.%s == 0 {\nreturn errors.New(\"%s is required\")\n}", f.Name, f.Name)
+	}
+	return ""
+}
+
+func gteCheck(f model.FieldDef, val string) string {
+	if !isNumericType(f.Type) {
+		return ""
+	}
+	return fmt.Sprintf("if req.%s < %s {\nreturn errors.New(\"%s must be >= %s\")\n}", f.Name, val, f.Name, val)
+}
+
+func lteCheck(f model.FieldDef, val string) string {
+	if !isNumericType(f.Type) {
+		return ""
+	}
+	return fmt.Sprintf("if req.%s > %s {\nreturn errors.New(\"%s must be <= %s\")\n}", f.Name, val, f.Name, val)
+}
+
+func neqCheck(f model.FieldDef, val string) string {
+	switch {
+	case f.Type == "string":
+		return fmt.Sprintf("if req.%s == \"%s\" {\nreturn errors.New(\"%s must not equal %s\")\n}", f.Name, val, f.Name, val)
+	case isNumericType(f.Type):
+		return fmt.Sprintf("if req.%s == %s {\nreturn errors.New(\"%s must not equal %s\")\n}", f.Name, val, f.Name, val)
+	}
+	return ""
+}
+
+func eqCheck(f model.FieldDef, val string) string {
+	switch {
+	case f.Type == "string":
+		return fmt.Sprintf("if req.%s != \"%s\" {\nreturn errors.New(\"%s must equal %s\")\n}", f.Name, val, f.Name, val)
+	case isNumericType(f.Type):
+		return fmt.Sprintf("if req.%s != %s {\nreturn errors.New(\"%s must equal %s\")\n}", f.Name, val, f.Name, val)
+	}
+	return ""
 }

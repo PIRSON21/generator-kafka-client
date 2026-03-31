@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/PIRSON21/generator-kafka-client/internal/model"
@@ -173,9 +174,10 @@ func buildStructDef(name string, st *ast.StructType) (model.StructDef, error) {
 				tag = `json:"` + kstrconv.ToSnakeCase(nameIdent.Name) + `"`
 			}
 			def.Fields = append(def.Fields, model.FieldDef{
-				Name: nameIdent.Name,
-				Type: fieldType,
-				Tag:  tag,
+				Name:        nameIdent.Name,
+				Type:        fieldType,
+				Tag:         removeTagKey(tag, "validate"),
+				ValidateTag: reflect.StructTag(tag).Get("validate"),
 			})
 		}
 	}
@@ -193,6 +195,52 @@ func isContextContext(expr ast.Expr) bool {
 		return false
 	}
 	return x.Name == "context" && sel.Sel.Name == "Context"
+}
+
+// removeTagKey returns the struct tag string with the specified key removed.
+func removeTagKey(tag, key string) string {
+	var result strings.Builder
+	s := tag
+	for s != "" {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
+			break
+		}
+		i := 0
+		for i < len(s) && s[i] != ':' && s[i] != ' ' {
+			i++
+		}
+		if i >= len(s) || s[i] != ':' || i+1 >= len(s) || s[i+1] != '"' {
+			break
+		}
+		k := s[:i]
+		s = s[i+1:]
+		j := 1
+		for j < len(s) {
+			if s[j] == '\\' {
+				j += 2
+				continue
+			}
+			if s[j] == '"' {
+				break
+			}
+			j++
+		}
+		if j >= len(s) {
+			break
+		}
+		val := s[:j+1]
+		s = s[j+1:]
+		if k != key {
+			if result.Len() > 0 {
+				result.WriteByte(' ')
+			}
+			result.WriteString(k)
+			result.WriteByte(':')
+			result.WriteString(val)
+		}
+	}
+	return result.String()
 }
 
 func exprTypeName(expr ast.Expr) string {

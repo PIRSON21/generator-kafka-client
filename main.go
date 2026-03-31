@@ -14,9 +14,10 @@ func main() {
 	schema := flag.String("schema", "", "path to schema.go (required)")
 	outDir := flag.String("out", "", "output directory for generated files (required)")
 	packageName := flag.String("package", "", "Go package name for generated files (required)")
+	kafkaImport := flag.String("kafka-import", "", "import path for kafka wrapper package (required)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: kafkagen -schema=<path> -out=<dir> -package=<name>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: kafkagen -schema=<path> -out=<dir> -package=<name> -kafka-import=<path>\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -32,6 +33,9 @@ func main() {
 	}
 	if *packageName == "" {
 		missing = append(missing, "-package")
+	}
+	if *kafkaImport == "" {
+		missing = append(missing, "-kafka-import")
 	}
 	if len(missing) > 0 {
 		for _, f := range missing {
@@ -49,7 +53,7 @@ func main() {
 
 	def.PackageName = *packageName
 
-	if err := generator.Generate(def, *outDir); err != nil {
+	if err := generator.Generate(def, *outDir, *kafkaImport); err != nil {
 		log.Fatalf("generate: %v", err)
 	}
 
@@ -57,5 +61,4 @@ func main() {
 	fmt.Println("  types.go")
 	fmt.Println("  client.go")
 	fmt.Println("  server.go")
-	fmt.Println("  kafka/")
 }

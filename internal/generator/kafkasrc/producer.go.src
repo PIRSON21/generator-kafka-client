@@ -1,14 +1,15 @@
 package kafka
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 type Producer interface {
-	AddMessage(key, data []byte) error // Добавляем сообщение
-	Close()                            // Закрываем соединение
+	AddMessage(ctx context.Context, msg KafkaMessage) error // Добавляем сообщение
+	Close()                                                 // Закрываем соединение
 }
 
 type producer struct {
@@ -38,29 +39,29 @@ func NewProducer(cfg *ConfigProducer) (Producer, error) {
 }
 
 // Добавляем сообщение.
-func (p *producer) AddMessage(key, data []byte) error {
-	deliveryChan := make(chan kafka.Event)
+func (p *producer) AddMessage(_ context.Context, msg KafkaMessage) error {
+	deliveryChan := make(chan kafka.Event, 1)
+	defer close(deliveryChan)
 
-	// Отправка сообщений в синхронном режиме
 	err := p.client.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{
 			Topic:     &p.topic,
 			Partition: kafka.PartitionAny,
 		},
-		Key:   key,
-		Value: data,
+		Key:   msg.Key,
+		Value: msg.Value,
 	}, deliveryChan)
 	if err != nil {
-		close(deliveryChan)
 		return err
 	}
 
-	// Ожидание события доставки
 	event := <-deliveryChan
-	m := event.(*kafka.Message)
+	m, ok := event.(*kafka.Message)
+	if !ok {
+		return fmt.Errorf("failed event: %+v", event)
+	}
 
 	if m.TopicPartition.Error != nil {
-		close(deliveryChan)
 		return m.TopicPartition.Error
 	}
 

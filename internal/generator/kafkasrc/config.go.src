@@ -1,5 +1,7 @@
 package kafka
 
+import "time"
+
 // Конфигурация для Producer.
 type ConfigProducer struct {
 	BootstrapServers  string
@@ -18,5 +20,8 @@ type ConfigConsumer struct {
 	EnableAutoOffsetStore bool
 	EnableAutoCommit      bool
 	AutoOffsetReset       string
-	Topic                 string
+	Topics                []string
+
+	ReadInterval time.Duration
+	ReadTimeout  time.Duration
 }

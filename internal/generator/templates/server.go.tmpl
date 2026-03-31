@@ -3,10 +3,10 @@ package {{.PackageName}}
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	kafkawrapper "{{.KafkaImport}}"
+	kafkaWrapper "{{.KafkaImport}}"
 )
 {{range .Services}}
 type {{.Name}}Handler interface {
@@ -16,14 +16,16 @@ type {{.Name}}Handler interface {
 }
 {{end}}
 type ServerConfig struct {
-	Kafka *kafkawrapper.ConfigConsumer
+	Kafka *kafkaWrapper.ConfigConsumer
 }
 
 type serverRouter struct {
+	globalCtx       context.Context
+	globalCtxCancel context.CancelFunc
 {{- range .Services}}
 	{{lowerFirst .Name}}Handler {{.Name}}Handler
 {{- end}}
-	consumer kafkawrapper.Consumer
+	consumer kafkaWrapper.Consumer
 }
 
 func NewServer(cfg ServerConfig,
@@ -31,27 +33,39 @@ func NewServer(cfg ServerConfig,
 	{{lowerFirst .Name}} {{.Name}}Handler,
 {{- end}}
 ) (*serverRouter, error) {
-	consumer, err := kafkawrapper.NewConsumer(cfg.Kafka)
+	consumer, err := kafkaWrapper.NewConsumer(cfg.Kafka)
 	if err != nil {
 		return nil, fmt.Errorf("create consumer: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &serverRouter{
 {{- range .Services}}
 		{{lowerFirst .Name}}Handler: {{lowerFirst .Name}},
 {{- end}}
-		consumer: consumer,
+		consumer:        consumer,
+		globalCtx:       ctx,
+		globalCtxCancel: cancel,
 	}, nil
 }
 
-func (s *serverRouter) Run(ctx context.Context) error {
-	return s.consumer.Consume(ctx, s.route)
+func (s *serverRouter) Run() error {
+	if err := s.consumer.Consume(s.globalCtx, s.route); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *serverRouter) Close() error {
+	s.globalCtxCancel()
 	return s.consumer.Close()
 }
 
-func (s *serverRouter) route(ctx context.Context, msg *kafka.Message) error {
+func (s *serverRouter) route(ctx context.Context, msg *kafkaWrapper.KafkaMessage) error {
 	var ev event
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
 		return fmt.Errorf("unmarshal event: %w", err)
@@ -61,7 +75,7 @@ func (s *serverRouter) route(ctx context.Context, msg *kafka.Message) error {
 {{- range .Services}}
 {{- $svc := .}}
 {{- range .Methods}}
-	case Event{{.Name}}:
+	case event{{.Name}}:
 		var req {{.ReqType}}
 		if err := json.Unmarshal(ev.Data, &req); err != nil {
 			return fmt.Errorf("unmarshal {{.ReqType}}: %w", err)

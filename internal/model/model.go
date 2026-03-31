@@ -23,7 +23,8 @@ type StructDef struct {
 }
 
 type FieldDef struct {
-	Name string
-	Type string
-	Tag  string // original tag from schema, or generated json:"snake_case"
+	Name        string
+	Type        string
+	Tag         string // original tag from schema, or generated json:"snake_case"
+	ValidateTag string // value of validate:"..." struct tag
 }

@@ -3,12 +3,12 @@ package schema
 import "context"
 
 type AddContractRequest struct {
-	ContractID int
+	ContractID int `json:"contract_id" validate:"required,gte=1"`
 }
 
 type AddTariffRequest struct {
-	TariffID int
-	Name     string
+	TariffID int    `json:"tariff_id" validate:"required,neq=1"`
+	Name     string `json:"name" validate:"required,neq=aboba"`
 }
 
 type Contract interface {
