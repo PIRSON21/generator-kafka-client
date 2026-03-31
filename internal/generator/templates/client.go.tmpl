@@ -48,7 +48,7 @@ func (c *{{lowerFirst .Name}}Client) Close() {
 	c.producer.Close()
 }
 
-func (c *{{lowerFirst .Name}}Client) send(ctx context.Context, eventType EventType, payload any) error {
+func (c *{{lowerFirst .Name}}Client) send(ctx context.Context, eventType eventType, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
